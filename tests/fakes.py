@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import subprocess
+from typing import Any
 
 from speaktome_mcp.audio import AudioInputDevice, CapturedAudio
 from speaktome_mcp.session import SessionManager
 from speaktome_mcp.state import ServerStateMachine
 from speaktome_mcp.transcription import AudioBuffer
+
+
+@dataclass(frozen=True)
+class FakeCompletedTranscript:
+    transcript: str
+    completed_windows: int
+    transcript_updated_at: str | None
 
 
 def make_captured_audio(
@@ -132,6 +141,8 @@ class FakeSessionManager:
                 "device_id": 7,
                 "sample_rate": 16000,
                 "state": "recording",
+                "mode": "rolling",
+                "duration_seconds": 12,
             },
         }
         self.stop_result = stop_result or {
@@ -139,8 +150,14 @@ class FakeSessionManager:
             "tool": "stop_listening",
             "data": {
                 "session_id": "session-123",
+                "status": "ready",
                 "transcript": "hello world",
                 "state": "idle",
+                "duration_seconds": 12,
+                "completed_windows": 1,
+                "transcript_updated_at": "2026-07-01T12:00:00Z",
+                "deprecated": True,
+                "replacement": "poll_transcription",
             },
         }
         self.status_result = status_result or {
@@ -182,15 +199,117 @@ class FakeSessionManager:
         return self.status_result
 
 
+class FakeSpeechService:
+    def __init__(
+        self,
+        *,
+        speak_error: Exception | None = None,
+    ) -> None:
+        self.speak_error = speak_error
+        self.calls: list[str] = []
+
+    def speak(self, text: str) -> None:
+        self.calls.append(text)
+        if self.speak_error is not None:
+            raise self.speak_error
+
+
 def build_manager(
     *,
     audio_capture: FakeAudioCapture | None = None,
     transcription_service: FakeTranscriptionService | None = None,
+    rolling_session_factory: FakeRollingSessionFactory | None = None,
     session_id: str = "session-123",
 ) -> SessionManager:
     return SessionManager(
         state_machine=ServerStateMachine(),
         audio_capture=audio_capture or FakeAudioCapture(),
         transcription_service=transcription_service or FakeTranscriptionService(),
+        rolling_session_factory=rolling_session_factory,
         session_id_factory=lambda: session_id,
     )
+
+
+@dataclass
+class FakeCompletedProcess:
+    args: list[str]
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+class FakeCommandRunner:
+    def __init__(
+        self,
+        *,
+        result: FakeCompletedProcess | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result or FakeCompletedProcess(args=["espeak-ng", "--stdin"])
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        if self.error is not None:
+            raise self.error
+        return subprocess.CompletedProcess(
+            args=self.result.args,
+            returncode=self.result.returncode,
+            stdout=self.result.stdout,
+            stderr=self.result.stderr,
+        )
+
+
+class FakeRollingTranscriptionSession:
+    def __init__(
+        self,
+        *,
+        device_id: int = 1,
+        sample_rate: int = 16_000,
+        duration_seconds: int = 12,
+        completed_transcript: FakeCompletedTranscript | None = None,
+        in_progress_transcript: str | None = None,
+        stop_error: Exception | None = None,
+    ) -> None:
+        self.device_id = device_id
+        self.sample_rate = sample_rate
+        self.duration_seconds = duration_seconds
+        self.completed_transcript = completed_transcript
+        self.in_progress_transcript = in_progress_transcript
+        self.stop_error = stop_error
+        self.stop_calls = 0
+        self.discarded_in_progress = False
+
+    def stop(self) -> FakeCompletedTranscript | None:
+        self.stop_calls += 1
+        if self.in_progress_transcript is not None:
+            self.discarded_in_progress = True
+        if self.stop_error is not None:
+            raise self.stop_error
+        return self.completed_transcript
+
+
+class FakeRollingSessionFactory:
+    def __init__(
+        self,
+        *,
+        rolling_session: FakeRollingTranscriptionSession | None = None,
+        start_error: Exception | None = None,
+    ) -> None:
+        self.rolling_session = rolling_session or FakeRollingTranscriptionSession()
+        self.start_error = start_error
+        self.calls: list[tuple[int, int | None, int | None]] = []
+
+    def __call__(
+        self,
+        *,
+        duration_seconds: int,
+        device_id: int | None = None,
+        sample_rate: int | None = None,
+    ) -> FakeRollingTranscriptionSession:
+        self.calls.append((duration_seconds, device_id, sample_rate))
+        if self.start_error is not None:
+            raise self.start_error
+        self.rolling_session.duration_seconds = duration_seconds
+        return self.rolling_session
