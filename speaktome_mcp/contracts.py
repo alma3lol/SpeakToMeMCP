@@ -16,7 +16,9 @@ class LifecycleState(StrEnum):
 
 TOOL_LIST_MICROPHONE_DEVICES = "list_microphone_devices"
 TOOL_START_LISTENING = "start_listening"
+TOOL_POLL_TRANSCRIPTION = "poll_transcription"
 TOOL_STOP_LISTENING = "stop_listening"
+TOOL_SPEAK_TEXT = "speak_text"
 TOOL_GET_SERVER_STATUS = "get_server_status"
 
 
@@ -86,6 +88,7 @@ def start_listening_success(
     session_id: str,
     device_id: int | None,
     sample_rate: int,
+    duration_seconds: int,
     state: LifecycleState = LifecycleState.RECORDING,
 ) -> dict[str, Any]:
     return build_tool_success(
@@ -95,6 +98,8 @@ def start_listening_success(
             "device_id": device_id,
             "sample_rate": sample_rate,
             "state": state.value,
+            "mode": "rolling",
+            "duration_seconds": duration_seconds,
         },
     )
 
@@ -107,18 +112,79 @@ def start_listening_error(
     return build_tool_error(TOOL_START_LISTENING, code, message, details)
 
 
-def stop_listening_success(
+def _build_poll_transcription_data(
     session_id: str,
     transcript: str,
+    duration_seconds: int,
+    completed_windows: int,
+    transcript_updated_at: str | None,
+    state: LifecycleState,
+) -> dict[str, Any]:
+    status = (
+        "pending"
+        if completed_windows == 0 and transcript == "" and transcript_updated_at is None
+        else "ready"
+    )
+    return {
+        "session_id": session_id,
+        "status": status,
+        "transcript": transcript,
+        "state": state.value,
+        "duration_seconds": duration_seconds,
+        "completed_windows": completed_windows,
+        "transcript_updated_at": transcript_updated_at,
+    }
+
+
+def poll_transcription_success(
+    session_id: str,
+    transcript: str,
+    duration_seconds: int,
+    completed_windows: int,
+    transcript_updated_at: str | None,
     state: LifecycleState = LifecycleState.IDLE,
 ) -> dict[str, Any]:
     return build_tool_success(
+        TOOL_POLL_TRANSCRIPTION,
+        _build_poll_transcription_data(
+            session_id=session_id,
+            transcript=transcript,
+            duration_seconds=duration_seconds,
+            completed_windows=completed_windows,
+            transcript_updated_at=transcript_updated_at,
+            state=state,
+        ),
+    )
+
+
+def poll_transcription_error(
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_tool_error(TOOL_POLL_TRANSCRIPTION, code, message, details)
+
+
+def stop_listening_success(
+    session_id: str,
+    transcript: str,
+    duration_seconds: int,
+    completed_windows: int,
+    transcript_updated_at: str | None,
+    state: LifecycleState = LifecycleState.IDLE,
+) -> dict[str, Any]:
+    data = _build_poll_transcription_data(
+        session_id=session_id,
+        transcript=transcript,
+        duration_seconds=duration_seconds,
+        completed_windows=completed_windows,
+        transcript_updated_at=transcript_updated_at,
+        state=state,
+    )
+    data.update({"deprecated": True, "replacement": TOOL_POLL_TRANSCRIPTION})
+    return build_tool_success(
         TOOL_STOP_LISTENING,
-        {
-            "session_id": session_id,
-            "transcript": transcript,
-            "state": state.value,
-        },
+        data,
     )
 
 
@@ -128,6 +194,25 @@ def stop_listening_error(
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return build_tool_error(TOOL_STOP_LISTENING, code, message, details)
+
+
+def speak_text_success(characters: int) -> dict[str, Any]:
+    return build_tool_success(
+        TOOL_SPEAK_TEXT,
+        {
+            "spoken": True,
+            "backend": "espeak-ng",
+            "characters": characters,
+        },
+    )
+
+
+def speak_text_error(
+    code: str,
+    message: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_tool_error(TOOL_SPEAK_TEXT, code, message, details)
 
 
 def get_server_status_success(

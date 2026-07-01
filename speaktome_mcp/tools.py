@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable, cast
 
 from mcp.server.fastmcp import FastMCP
 
@@ -13,20 +13,28 @@ from speaktome_mcp.contracts import (
     ERROR_RUNTIME_FAILURE,
     TOOL_GET_SERVER_STATUS,
     TOOL_LIST_MICROPHONE_DEVICES,
+    TOOL_POLL_TRANSCRIPTION,
+    TOOL_SPEAK_TEXT,
     TOOL_START_LISTENING,
     TOOL_STOP_LISTENING,
     ToolContractError,
     get_server_status_error,
     list_microphone_devices_error,
     list_microphone_devices_success,
+    poll_transcription_error,
+    speak_text_error,
+    speak_text_success,
     start_listening_error,
     stop_listening_error,
 )
-from speaktome_mcp.session import SessionManager
-
-
+from speaktome_mcp.speech import SpeechService
 ToolPayload = dict[str, Any]
 ToolHandlerProvider = Callable[[], "SpeakToMeToolHandlers"]
+
+
+class _UnavailableSpeechService:
+    def speak(self, text: str) -> None:
+        raise RuntimeError("Speech service is not configured")
 
 
 @dataclass(slots=True)
@@ -34,7 +42,8 @@ class SpeakToMeToolHandlers:
     """Finalized MCP tool handlers delegating to audio/session abstractions."""
 
     audio_capture: AudioCapture
-    session_manager: SessionManager
+    session_manager: object
+    speech_service: SpeechService = field(default_factory=_UnavailableSpeechService)
 
     def list_microphone_devices(self) -> ToolPayload:
         try:
@@ -52,10 +61,12 @@ class SpeakToMeToolHandlers:
 
     def start_listening(
         self,
+        duration_seconds: object,
         device_id: int | None = None,
         sample_rate: int | None = None,
     ) -> ToolPayload:
         try:
+            validated_duration_seconds = self._validate_duration_seconds(duration_seconds)
             validated_device_id = self._validate_optional_non_negative_int(
                 tool=TOOL_START_LISTENING,
                 field_name="device_id",
@@ -66,7 +77,8 @@ class SpeakToMeToolHandlers:
                 field_name="sample_rate",
                 value=sample_rate,
             )
-            return self.session_manager.start_listening(
+            return cast(Any, self.session_manager).start_listening(
+                duration_seconds=validated_duration_seconds,
                 device_id=validated_device_id,
                 sample_rate=validated_sample_rate,
             )
@@ -79,10 +91,23 @@ class SpeakToMeToolHandlers:
                 exc=exc,
             )
 
+    def poll_transcription(self, session_id: str) -> ToolPayload:
+        try:
+            validated_session_id = self._validate_session_id(TOOL_POLL_TRANSCRIPTION, session_id)
+            return cast(Any, self.session_manager).poll_transcription(validated_session_id)
+        except ToolContractError as exc:
+            return exc.payload
+        except Exception as exc:
+            return self._runtime_error(
+                tool=TOOL_POLL_TRANSCRIPTION,
+                message="Failed to poll transcription.",
+                exc=exc,
+            )
+
     def stop_listening(self, session_id: str) -> ToolPayload:
         try:
-            validated_session_id = self._validate_session_id(session_id)
-            return self.session_manager.stop_listening(validated_session_id)
+            validated_session_id = self._validate_session_id(TOOL_STOP_LISTENING, session_id)
+            return cast(Any, self.session_manager).stop_listening(validated_session_id)
         except ToolContractError as exc:
             return exc.payload
         except Exception as exc:
@@ -92,9 +117,23 @@ class SpeakToMeToolHandlers:
                 exc=exc,
             )
 
+    def speak_text(self, text: object) -> ToolPayload:
+        try:
+            validated_text = self._validate_text(text)
+            self.speech_service.speak(validated_text)
+            return speak_text_success(len(validated_text))
+        except ToolContractError as exc:
+            return exc.payload
+        except Exception as exc:
+            return self._runtime_error(
+                tool=TOOL_SPEAK_TEXT,
+                message="Failed to speak text.",
+                exc=exc,
+            )
+
     def get_server_status(self) -> ToolPayload:
         try:
-            return self.session_manager.get_server_status()
+            return cast(Any, self.session_manager).get_server_status()
         except ToolContractError as exc:
             return exc.payload
         except Exception as exc:
@@ -113,18 +152,42 @@ class SpeakToMeToolHandlers:
             "is_default": device.is_default,
         }
 
-    def _validate_session_id(self, value: object) -> str:
+    def _validate_session_id(self, tool: str, value: object) -> str:
         if isinstance(value, str) and value.strip():
             return value
 
         raise ToolContractError(
-            stop_listening_error(
-                ERROR_INVALID_ARGUMENT,
-                "session_id must be a non-empty string.",
-                {
-                    "field": "session_id",
-                    "value": value,
-                },
+            self._invalid_argument_error(
+                tool=tool,
+                field_name="session_id",
+                value=value,
+                expectation="a non-empty string",
+            )
+        )
+
+    def _validate_duration_seconds(self, value: object) -> int:
+        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 30:
+            return value
+
+        raise ToolContractError(
+            self._invalid_argument_error(
+                tool=TOOL_START_LISTENING,
+                field_name="duration_seconds",
+                value=value,
+                expectation="an integer between 1 and 30",
+            )
+        )
+
+    def _validate_text(self, value: object) -> str:
+        if isinstance(value, str) and value.strip() and len(value) <= 1000:
+            return value
+
+        raise ToolContractError(
+            self._invalid_argument_error(
+                tool=TOOL_SPEAK_TEXT,
+                field_name="text",
+                value=value,
+                expectation="a non-empty string with at most 1000 characters",
             )
         )
 
@@ -188,8 +251,12 @@ class SpeakToMeToolHandlers:
 
         if tool == TOOL_START_LISTENING:
             return start_listening_error(ERROR_INVALID_ARGUMENT, message, details)
+        if tool == TOOL_POLL_TRANSCRIPTION:
+            return poll_transcription_error(ERROR_INVALID_ARGUMENT, message, details)
         if tool == TOOL_STOP_LISTENING:
             return stop_listening_error(ERROR_INVALID_ARGUMENT, message, details)
+        if tool == TOOL_SPEAK_TEXT:
+            return speak_text_error(ERROR_INVALID_ARGUMENT, message, details)
         if tool == TOOL_LIST_MICROPHONE_DEVICES:
             return list_microphone_devices_error(ERROR_INVALID_ARGUMENT, message, details)
         return get_server_status_error(ERROR_INVALID_ARGUMENT, message, details)
@@ -204,8 +271,12 @@ class SpeakToMeToolHandlers:
             return list_microphone_devices_error(ERROR_RUNTIME_FAILURE, message, details)
         if tool == TOOL_START_LISTENING:
             return start_listening_error(ERROR_RUNTIME_FAILURE, message, details)
+        if tool == TOOL_POLL_TRANSCRIPTION:
+            return poll_transcription_error(ERROR_RUNTIME_FAILURE, message, details)
         if tool == TOOL_STOP_LISTENING:
             return stop_listening_error(ERROR_RUNTIME_FAILURE, message, details)
+        if tool == TOOL_SPEAK_TEXT:
+            return speak_text_error(ERROR_RUNTIME_FAILURE, message, details)
         return get_server_status_error(ERROR_RUNTIME_FAILURE, message, details)
 
 
@@ -218,14 +289,27 @@ def register_tools(server: FastMCP, handler_provider: ToolHandlerProvider) -> No
 
     @server.tool(name=TOOL_START_LISTENING, structured_output=True)
     def start_listening(
+        duration_seconds: int,
         device_id: int | None = None,
         sample_rate: int | None = None,
     ) -> ToolPayload:
-        return handler_provider().start_listening(device_id=device_id, sample_rate=sample_rate)
+        return handler_provider().start_listening(
+            duration_seconds=duration_seconds,
+            device_id=device_id,
+            sample_rate=sample_rate,
+        )
+
+    @server.tool(name=TOOL_POLL_TRANSCRIPTION, structured_output=True)
+    def poll_transcription(session_id: str) -> ToolPayload:
+        return handler_provider().poll_transcription(session_id=session_id)
 
     @server.tool(name=TOOL_STOP_LISTENING, structured_output=True)
     def stop_listening(session_id: str) -> ToolPayload:
         return handler_provider().stop_listening(session_id=session_id)
+
+    @server.tool(name=TOOL_SPEAK_TEXT, structured_output=True)
+    def speak_text(text: str) -> ToolPayload:
+        return handler_provider().speak_text(text=text)
 
     @server.tool(name=TOOL_GET_SERVER_STATUS, structured_output=True)
     def get_server_status() -> ToolPayload:
