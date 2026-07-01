@@ -12,42 +12,71 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_SCRIPT = """
 from speaktome_mcp.server import build_server
 from speaktome_mcp.tools import SpeakToMeToolHandlers
-from tests.fakes import FakeAudioCapture, FakeSessionManager, make_audio_input_device
+from tests.fakes import FakeAudioCapture, FakeSpeechService, make_audio_input_device
 
 
 def build_handlers():
-    session_manager = FakeSessionManager(
-        start_result={
-            'ok': True,
-            'tool': 'start_listening',
-            'data': {
-                'session_id': 'session-123',
-                'device_id': 1,
-                'sample_rate': 16000,
-                'state': 'recording',
-            },
-        },
-        stop_result={
-            'ok': True,
-            'tool': 'stop_listening',
-            'data': {
-                'session_id': 'session-123',
-                'transcript': '',
-                'state': 'idle',
-            },
-        },
-        status_result={
-            'ok': True,
-            'tool': 'get_server_status',
-            'data': {
-                'state': 'idle',
-                'active_session_id': None,
-            },
-        },
-    )
+    class FakeSessionManager:
+        def start_listening(self, *, duration_seconds, device_id=None, sample_rate=None):
+            return {
+                'ok': True,
+                'tool': 'start_listening',
+                'data': {
+                    'session_id': 'session-123',
+                    'device_id': device_id,
+                    'sample_rate': sample_rate or 16000,
+                    'state': 'recording',
+                    'mode': 'rolling',
+                    'duration_seconds': duration_seconds,
+                },
+            }
+
+        def poll_transcription(self, session_id):
+            return {
+                'ok': True,
+                'tool': 'poll_transcription',
+                'data': {
+                    'session_id': session_id,
+                    'status': 'ready',
+                    'transcript': 'latest completed window',
+                    'state': 'idle',
+                    'duration_seconds': 5,
+                    'completed_windows': 2,
+                    'transcript_updated_at': '2026-07-01T12:00:00Z',
+                },
+            }
+
+        def stop_listening(self, session_id):
+            return {
+                'ok': True,
+                'tool': 'stop_listening',
+                'data': {
+                    'session_id': session_id,
+                    'status': 'ready',
+                    'transcript': 'latest completed window',
+                    'state': 'idle',
+                    'duration_seconds': 5,
+                    'completed_windows': 2,
+                    'transcript_updated_at': '2026-07-01T12:00:00Z',
+                    'deprecated': True,
+                    'replacement': 'poll_transcription',
+                },
+            }
+
+        def get_server_status(self):
+            return {
+                'ok': True,
+                'tool': 'get_server_status',
+                'data': {
+                    'state': 'idle',
+                    'active_session_id': None,
+                },
+            }
+
     return SpeakToMeToolHandlers(
         audio_capture=FakeAudioCapture(devices=[make_audio_input_device()]),
-        session_manager=session_manager,
+        session_manager=FakeSessionManager(),
+        speech_service=FakeSpeechService(),
     )
 
 
@@ -65,14 +94,16 @@ def test_stdio_server_exposes_expected_tool_surface() -> None:
 
         async with stdio_client(params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
+                _ = await session.initialize()
                 tools_result = await session.list_tools()
                 tool_names = [tool.name for tool in tools_result.tools]
 
                 assert tool_names == [
                     "list_microphone_devices",
                     "start_listening",
+                    "poll_transcription",
                     "stop_listening",
+                    "speak_text",
                     "get_server_status",
                 ]
 
@@ -106,7 +137,10 @@ def test_stdio_server_exposes_expected_tool_surface() -> None:
                     },
                 }
 
-                start_result = await session.call_tool("start_listening", {"device_id": 1})
+                start_result = await session.call_tool(
+                    "start_listening",
+                    {"duration_seconds": 5, "device_id": 1},
+                )
                 assert start_result.isError is False
                 assert start_result.structuredContent == {
                     "ok": True,
@@ -116,6 +150,24 @@ def test_stdio_server_exposes_expected_tool_surface() -> None:
                         "device_id": 1,
                         "sample_rate": 16000,
                         "state": "recording",
+                        "mode": "rolling",
+                        "duration_seconds": 5,
+                    },
+                }
+
+                poll_result = await session.call_tool("poll_transcription", {"session_id": "session-123"})
+                assert poll_result.isError is False
+                assert poll_result.structuredContent == {
+                    "ok": True,
+                    "tool": "poll_transcription",
+                    "data": {
+                        "session_id": "session-123",
+                        "status": "ready",
+                        "transcript": "latest completed window",
+                        "state": "idle",
+                        "duration_seconds": 5,
+                        "completed_windows": 2,
+                        "transcript_updated_at": "2026-07-01T12:00:00Z",
                     },
                 }
 
@@ -126,8 +178,26 @@ def test_stdio_server_exposes_expected_tool_surface() -> None:
                     "tool": "stop_listening",
                     "data": {
                         "session_id": "session-123",
-                        "transcript": "",
+                        "status": "ready",
+                        "transcript": "latest completed window",
                         "state": "idle",
+                        "duration_seconds": 5,
+                        "completed_windows": 2,
+                        "transcript_updated_at": "2026-07-01T12:00:00Z",
+                        "deprecated": True,
+                        "replacement": "poll_transcription",
+                    },
+                }
+
+                speak_result = await session.call_tool("speak_text", {"text": "hello world"})
+                assert speak_result.isError is False
+                assert speak_result.structuredContent == {
+                    "ok": True,
+                    "tool": "speak_text",
+                    "data": {
+                        "spoken": True,
+                        "backend": "espeak-ng",
+                        "characters": 11,
                     },
                 }
 
