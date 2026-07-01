@@ -108,6 +108,44 @@ This server is meant to be launched by an MCP host that can start a stdio proces
 
 The host owns process startup and shutdown. SpeakToMe MCP does not expose a separate network service. It stays in a local stdio process and returns completed tool responses to the host.
 
+## How to use in agents
+
+If you are wiring this server into an agentic MCP host, keep the configuration simple and launch one local stdio process.
+
+### Installed package configuration
+
+```json
+{
+  "command": "speaktome-mcp",
+  "args": []
+}
+```
+
+### Local checkout configuration
+
+```json
+{
+  "command": "uv",
+  "args": ["run", "speaktome-mcp"]
+}
+```
+
+### Recommended agent tool flow
+
+1. Call `list_microphone_devices` if the agent needs to inspect or choose a microphone.
+2. Call `start_listening(duration_seconds=...)` with a duration between 1 and 30 seconds to start rolling local capture.
+3. Wait for the user to finish speaking, then call `poll_transcription(session_id)` to stop the active session and return the latest completed transcript window.
+4. If the agent wants local spoken feedback, call `speak_text(text)` after transcription or as a separate step.
+5. Treat `stop_listening(session_id)` as a deprecated compatibility alias for `poll_transcription(session_id)`, not the preferred path for new agent flows.
+
+### Guardrails for agent hosts
+
+- Only one active session is allowed at a time. Do not call `start_listening(duration_seconds=...)` again until the current session has been stopped with `poll_transcription(session_id)` or the deprecated `stop_listening(session_id)` alias.
+- `duration_seconds` must be an integer from 1 through 30.
+- `poll_transcription(session_id)` can return a successful pending result if no rolling window completed before the session was stopped. In that case, `data.status` is `"pending"` and `data.transcript` is empty.
+- This server is Linux only and depends on local resources: a microphone, the local `faster-whisper` `small` model, and `espeak-ng` if the agent uses `speak_text(text)`.
+- Audio capture, transcription, and speech are local to the machine running the MCP host. This project does not use cloud speech-to-text or cloud text-to-speech APIs.
+
 ## Startup behavior and first run expectations
 
 The server eagerly loads the transcription backend during startup instead of waiting for the first tool call.
