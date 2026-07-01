@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from speaktome_mcp.audio import AudioCapture, SoundDeviceAudioCapture
 from speaktome_mcp.session import SessionManager
+from speaktome_mcp.speech import EspeakSpeechService, SpeechService
 from speaktome_mcp.state import ServerStateMachine
 from speaktome_mcp.tools import SpeakToMeToolHandlers, register_tools
 from speaktome_mcp.transcription import TranscriptionService, load_transcription_service
@@ -25,6 +26,7 @@ def build_default_tool_handlers() -> SpeakToMeToolHandlers:
     sounddevice_module = import_module("sounddevice")
     audio_capture: AudioCapture = SoundDeviceAudioCapture(sounddevice_module)
     transcription_service: TranscriptionService = load_transcription_service()
+    speech_service: SpeechService = EspeakSpeechService()
     session_manager = SessionManager(
         state_machine=ServerStateMachine(),
         audio_capture=audio_capture,
@@ -33,6 +35,7 @@ def build_default_tool_handlers() -> SpeakToMeToolHandlers:
     return SpeakToMeToolHandlers(
         audio_capture=audio_capture,
         session_manager=session_manager,
+        speech_service=speech_service,
     )
 
 

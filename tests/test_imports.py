@@ -28,7 +28,12 @@ def test_package_import_in_subprocess_is_side_effect_free() -> None:
 
 
 def test_server_factory_creates_named_server() -> None:
-    server = build_server()
+    server = build_server(eager=False)
+    assert server.name == SERVER_NAME
+
+
+def test_build_server_eager_false_does_not_instantiate_dependencies() -> None:
+    server = build_server(eager=False)
     assert server.name == SERVER_NAME
 
 
