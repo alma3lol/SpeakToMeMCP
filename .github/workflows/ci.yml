@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+          cache-python: true
+
+      - name: Install project and dev dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Validate distribution metadata
+        run: uv run --with twine twine check --strict dist/*
+
+      - name: Smoke test wheel install
+        run: |
+          uv venv .venv-wheel --python 3.11
+          .venv-wheel/bin/python -m pip install dist/*.whl
+          .venv-wheel/bin/python -c "import speaktome_mcp; import speaktome_mcp.server; print(speaktome_mcp.__version__)"
+          .venv-wheel/bin/python -m speaktome_mcp --help
+          .venv-wheel/bin/speaktome-mcp --help
+
+      - name: Smoke test sdist install
+        run: |
+          uv venv .venv-sdist --python 3.11
+          .venv-sdist/bin/python -m pip install dist/*.tar.gz
+          .venv-sdist/bin/python -c "import speaktome_mcp; import speaktome_mcp.server; print(speaktome_mcp.__version__)"
+          .venv-sdist/bin/python -m speaktome_mcp --help
+          .venv-sdist/bin/speaktome-mcp --help
