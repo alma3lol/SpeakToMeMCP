@@ -37,7 +37,7 @@ jobs:
       - name: Smoke test wheel install
         run: |
           uv venv .venv-wheel --python 3.11
-          .venv-wheel/bin/python -m pip install dist/*.whl
+          uv pip install --python .venv-wheel/bin/python dist/*.whl
           .venv-wheel/bin/python -c "import speaktome_mcp; import speaktome_mcp.server; print(speaktome_mcp.__version__)"
           .venv-wheel/bin/python -m speaktome_mcp --help
           .venv-wheel/bin/speaktome-mcp --help
@@ -45,7 +45,7 @@ jobs:
       - name: Smoke test sdist install
         run: |
           uv venv .venv-sdist --python 3.11
-          .venv-sdist/bin/python -m pip install dist/*.tar.gz
+          uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
           .venv-sdist/bin/python -c "import speaktome_mcp; import speaktome_mcp.server; print(speaktome_mcp.__version__)"
           .venv-sdist/bin/python -m speaktome_mcp --help
           .venv-sdist/bin/speaktome-mcp --help
