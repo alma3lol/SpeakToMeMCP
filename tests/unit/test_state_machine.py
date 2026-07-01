@@ -26,17 +26,7 @@ def test_valid_lifecycle_transitions() -> None:
         },
     }
 
-    machine.stop_listening("session-123")
-    assert machine.get_status() == {
-        "ok": True,
-        "tool": "get_server_status",
-        "data": {
-            "state": "transcribing",
-            "active_session_id": "session-123",
-        },
-    }
-
-    machine.finish_transcription("session-123")
+    machine.poll_transcription("session-123")
     assert machine.get_status() == {
         "ok": True,
         "tool": "get_server_status",
@@ -68,23 +58,78 @@ def test_invalid_double_start_while_recording_returns_structured_error() -> None
     }
 
 
-def test_invalid_double_start_while_transcribing_returns_structured_error() -> None:
+def test_stop_listening_alias_returns_idle_immediately() -> None:
     machine = ServerStateMachine()
     machine.start_listening("session-123")
+
     machine.stop_listening("session-123")
 
+    assert machine.get_status() == {
+        "ok": True,
+        "tool": "get_server_status",
+        "data": {
+            "state": "idle",
+            "active_session_id": None,
+        },
+    }
+
+
+def test_invalid_poll_without_active_session_returns_structured_error() -> None:
+    machine = ServerStateMachine()
+
     with pytest.raises(ToolContractError) as exc_info:
-        machine.start_listening("session-456")
+        machine.poll_transcription("session-123")
 
     assert exc_info.value.payload == {
         "ok": False,
-        "tool": "start_listening",
+        "tool": "poll_transcription",
         "error": {
-            "code": "invalid_state",
-            "message": "Cannot start listening unless the server is idle.",
+            "code": "no_active_session",
+            "message": "Cannot poll transcription because no active session exists.",
             "details": {
-                "current_state": "transcribing",
-                "expected_state": "idle",
+                "current_state": "idle",
+            },
+        },
+    }
+
+
+def test_invalid_poll_with_session_mismatch_returns_structured_error() -> None:
+    machine = ServerStateMachine()
+    machine.start_listening("session-123")
+
+    with pytest.raises(ToolContractError) as exc_info:
+        machine.poll_transcription("session-456")
+
+    assert exc_info.value.payload == {
+        "ok": False,
+        "tool": "poll_transcription",
+        "error": {
+            "code": "session_mismatch",
+            "message": "Cannot poll transcription for a different session.",
+            "details": {
+                "active_session_id": "session-123",
+                "requested_session_id": "session-456",
+            },
+        },
+    }
+
+
+def test_invalid_poll_after_stop_returns_structured_error() -> None:
+    machine = ServerStateMachine()
+    machine.start_listening("session-123")
+    machine.poll_transcription("session-123")
+
+    with pytest.raises(ToolContractError) as exc_info:
+        machine.poll_transcription("session-123")
+
+    assert exc_info.value.payload == {
+        "ok": False,
+        "tool": "poll_transcription",
+        "error": {
+            "code": "no_active_session",
+            "message": "Cannot poll transcription because no active session exists.",
+            "details": {
+                "current_state": "idle",
             },
         },
     }
@@ -130,7 +175,7 @@ def test_invalid_stop_with_session_mismatch_returns_structured_error() -> None:
     }
 
 
-def test_invalid_stop_while_transcribing_returns_structured_error() -> None:
+def test_invalid_stop_after_stop_returns_structured_error() -> None:
     machine = ServerStateMachine()
     machine.start_listening("session-123")
     machine.stop_listening("session-123")
@@ -142,12 +187,10 @@ def test_invalid_stop_while_transcribing_returns_structured_error() -> None:
         "ok": False,
         "tool": "stop_listening",
         "error": {
-            "code": "invalid_state",
-            "message": "Cannot stop listening unless the server is recording.",
+            "code": "no_active_session",
+            "message": "Cannot stop listening because no active session exists.",
             "details": {
-                "current_state": "transcribing",
-                "expected_state": "recording",
-                "active_session_id": "session-123",
+                "current_state": "idle",
             },
         },
     }

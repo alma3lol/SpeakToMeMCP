@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from speaktome_mcp.contracts import (
     ERROR_INVALID_STATE,
@@ -11,9 +12,13 @@ from speaktome_mcp.contracts import (
     LifecycleState,
     ToolContractError,
     get_server_status_success,
+    poll_transcription_error,
     start_listening_error,
     stop_listening_error,
 )
+
+
+ErrorBuilder = Callable[[str, str, dict[str, object] | None], dict[str, object]]
 
 
 @dataclass(slots=True)
@@ -46,14 +51,51 @@ class ServerStateMachine:
         self.state = LifecycleState.RECORDING
         self.active_session_id = session_id
 
-    def stop_listening(self, session_id: str) -> None:
-        """Move from recording to transcribing for the active session."""
+    def poll_transcription(self, session_id: str) -> None:
+        """Move from recording to idle while stopping the rolling session."""
 
+        self._complete_active_session(
+            session_id=session_id,
+            error_builder=poll_transcription_error,
+            missing_message="Cannot poll transcription because no active session exists.",
+            mismatch_message="Cannot poll transcription for a different session.",
+        )
+
+    def stop_listening(self, session_id: str) -> None:
+        """Deprecated alias for poll_transcription with stop_listening payloads."""
+
+        self._complete_active_session(
+            session_id=session_id,
+            error_builder=stop_listening_error,
+            missing_message="Cannot stop listening because no active session exists.",
+            mismatch_message="Cannot stop listening for a different session.",
+        )
+
+    def abort_session(self, session_id: str) -> None:
+        """Best-effort reset used when startup or worker failures occur."""
+
+        if self.active_session_id == session_id:
+            self.state = LifecycleState.IDLE
+            self.active_session_id = None
+
+    def finish_transcription(self, session_id: str) -> None:
+        """Retained for compatibility with older callers."""
+
+        self.abort_session(session_id)
+
+    def _complete_active_session(
+        self,
+        *,
+        session_id: str,
+        error_builder: ErrorBuilder,
+        missing_message: str,
+        mismatch_message: str,
+    ) -> None:
         if self.state is LifecycleState.IDLE or self.active_session_id is None:
             raise ToolContractError(
-                stop_listening_error(
+                error_builder(
                     ERROR_NO_ACTIVE_SESSION,
-                    "Cannot stop listening because no active session exists.",
+                    missing_message,
                     {
                         "current_state": self.state.value,
                     },
@@ -62,7 +104,7 @@ class ServerStateMachine:
 
         if self.state is not LifecycleState.RECORDING:
             raise ToolContractError(
-                stop_listening_error(
+                error_builder(
                     ERROR_INVALID_STATE,
                     "Cannot stop listening unless the server is recording.",
                     {
@@ -75,38 +117,9 @@ class ServerStateMachine:
 
         if session_id != self.active_session_id:
             raise ToolContractError(
-                stop_listening_error(
+                error_builder(
                     ERROR_SESSION_MISMATCH,
-                    "Cannot stop listening for a different session.",
-                    {
-                        "active_session_id": self.active_session_id,
-                        "requested_session_id": session_id,
-                    },
-                )
-            )
-
-        self.state = LifecycleState.TRANSCRIBING
-
-    def finish_transcription(self, session_id: str) -> None:
-        """Move from transcribing back to idle after the active session completes."""
-
-        if self.state is not LifecycleState.TRANSCRIBING or self.active_session_id is None:
-            raise ToolContractError(
-                stop_listening_error(
-                    ERROR_INVALID_STATE,
-                    "Cannot finish transcription unless the server is transcribing.",
-                    {
-                        "current_state": self.state.value,
-                        "expected_state": LifecycleState.TRANSCRIBING.value,
-                    },
-                )
-            )
-
-        if session_id != self.active_session_id:
-            raise ToolContractError(
-                stop_listening_error(
-                    ERROR_SESSION_MISMATCH,
-                    "Cannot finish transcription for a different session.",
+                    mismatch_message,
                     {
                         "active_session_id": self.active_session_id,
                         "requested_session_id": session_id,
