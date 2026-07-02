@@ -112,23 +112,66 @@ The host owns process startup and shutdown. SpeakToMe MCP does not expose a sepa
 
 If you are wiring this server into an agentic MCP host, keep the configuration simple and launch one local stdio process.
 
-### Installed package configuration
+### mcp-host
+
+Use a local server entry in `.mcphost.json`.
 
 ```json
 {
-  "command": "speaktome-mcp",
-  "args": []
+  "mcpServers": {
+    "speaktome": {
+      "type": "local",
+      "command": ["speaktome-mcp"]
+    }
+  }
 }
 ```
 
-### Local checkout configuration
+For a local checkout, adapt the command to the command-and-args form your host supports, for example `uv run speaktome-mcp`.
+
+### OpenAI Codex
+
+Add the server from the CLI:
+
+```bash
+codex mcp add speaktome -- speaktome-mcp
+```
+
+Equivalent TOML configuration:
+
+```toml
+[mcp_servers.speaktome]
+command = "speaktome-mcp"
+args = []
+```
+
+For a local checkout, adapt the command to run through uv, for example `command = "uv"` with `args = ["run", "speaktome-mcp"]`.
+
+### Claude Code
+
+Add the server over stdio:
+
+```bash
+claude mcp add --transport stdio speaktome -- speaktome-mcp
+```
+
+The `--` separator is required before the server command.
+
+Equivalent `.mcp.json` configuration:
 
 ```json
 {
-  "command": "uv",
-  "args": ["run", "speaktome-mcp"]
+  "mcpServers": {
+    "speaktome": {
+      "type": "stdio",
+      "command": "speaktome-mcp",
+      "args": []
+    }
+  }
 }
 ```
+
+For a local checkout, use the same command-plus-args pattern with `uv run speaktome-mcp` where your Claude setup supports it.
 
 ### Recommended agent tool flow
 
